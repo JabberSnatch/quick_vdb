@@ -65,6 +65,7 @@ private:
 	static std::size_t const BitIndex_(Position_t const &_p)
 	{
 		// z + y * Nz + x * Nz*Ny -> puts z in the least significant bits
+		// x, y, and z being local coordinates ( [0, 2^kLog2Side[ )
 		constexpr std::size_t kLocalMask = (1u << kLog2Side) - 1u;
 		return
 			(_p[2] & kLocalMask) |
@@ -80,7 +81,68 @@ class BranchNode
 {
 public:
 	static constexpr std::size_t kLog2Side = Log2Side + Child::kLog2Side;
+	BranchNode() = default;
+	explicit BranchNode(bool _active){ if (_active) active_bits_.set(); }
+public:
+	void set(Position_t const &_p, bool const _v = true)
+	{
+		std::size_t const bit_index = BitIndex_(_p);
+		if (!child_bits_[bit_index])
+		{
+			if (_v != active_bits_[bit_index])
+			{
+				children_[bit_index].reset(new Child(active_bits_[bit_index]));
+				children_[bit_index]->set(_p, _v);
+			}
+		}
+		else
+		{
+			children_[bit_index]->set(_p, _v);
+			if (children_[bit_index]->all())
+			{
+				active_bits_.set(bit_index);
+				children_[bit_index].reset(nullptr);
+			}
+			else if (children_[bit_index]->none())
+			{
+				active_bits_.reset(bit_index);
+				children_[bit_index].reset(nullptr);
+			}
+		}
+	}
+	bool get(Position_t const &_p) const
+	{
+		std::size_t const bit_index = BitIndex_(_p);
+		if (child_bits_[bit_index]) return children_[bit_index]->get(_p);
+		else return active_bits_[bit_index];
+	}
+	bool all() const
+	{
+		return active_bits_.all();
+	}
+	bool none() const
+	{
+		return active_bits_.none();
+	}
 private:
+	static constexpr std::size_t kInternalLog2Side = Log2Side;
+	static std::size_t const BitIndex_(Position_t const &_p)
+	{
+		// z/Child::Nz + (y/Child::Ny) * Nz + (x/Child::Nx) * Nz*Ny
+		// computes position in terms of children and packs the result the same way as a LeafNode would
+		// x, y, and z are local coordinates as well ( [0, 2^kLog2Side[ )
+		// Nx, Ny, and Nz are bounds in terms of children ( [0, 2^kInternalLog2Side[ )
+		constexpr std::size_t kLocalMask = (1u << kLog2Side) - 1u;
+		return
+			((_p[2] & kLocalMask) >> Child::kLog2Side) |
+			((_p[1] & kLocalMask) >> Child::kLog2Side) << kInternalLog2Side |
+			((_p[0] & kLocalMask) >> Child::kLog2Side) << kInternalLog2Side*2u;
+	}
+private:
+	static constexpr std::size_t kSize = kInternalLog2Side * 3u;
+	std::array<std::unique_ptr<Child>, 1u << kSize> children_;
+	std::bitset<1u << kSize> active_bits_;
+	std::bitset<1u << kSize> child_bits_;
 };
 
 template <typename Child>
@@ -277,7 +339,9 @@ public:
 } // namespace quick_vdb
 
 static constexpr std::size_t kLeafSide = 3u;
-using VDB_t = quick_vdb::RootNode<quick_vdb::LeafNode<kLeafSide>>;
+static constexpr std::size_t kBranch1Side = 3u;
+using OneLevelVDB_t = quick_vdb::RootNode<quick_vdb::LeafNode<kLeafSide>>;
+using TwoLevelVDB_t = quick_vdb::RootNode<quick_vdb::BranchNode<quick_vdb::LeafNode<kLeafSide>, kBranch1Side>>;
 
 #define LOG_UNIT_TEST(func)										\
 	if (func())													\
@@ -285,19 +349,28 @@ using VDB_t = quick_vdb::RootNode<quick_vdb::LeafNode<kLeafSide>>;
 	else														\
 		std::cout << #func << " test failed" << std::endl;
 
+template <typename VDB>
+void UnitTests()
+{
+	LOG_UNIT_TEST(VDB::UnitTests::FirstLevelChildAlloc_SingleChild);
+	LOG_UNIT_TEST(VDB::UnitTests::FirstLevelChildAlloc_DifferentChild);
+	LOG_UNIT_TEST(VDB::UnitTests::FirstLevelChildAlloc_SameChild);
+	LOG_UNIT_TEST(VDB::UnitTests::FirstLevelChildExists_FullChild_True);
+	LOG_UNIT_TEST(VDB::UnitTests::FirstLevelChildExists_FullChild_False);
+	LOG_UNIT_TEST(VDB::UnitTests::FirstLevelChildFree_FullChild_True);
+	LOG_UNIT_TEST(VDB::UnitTests::FirstLevelChildFree_FullChild_False);
+	LOG_UNIT_TEST(VDB::UnitTests::FirstLevelChildGet_ExistingChild);
+	LOG_UNIT_TEST(VDB::UnitTests::FirstLevelChildGet_MissingChild);
+	LOG_UNIT_TEST(VDB::UnitTests::FirstLevelChildGet_FullChild_True);
+	LOG_UNIT_TEST(VDB::UnitTests::FirstLevelChildGet_FullChild_False);
+	LOG_UNIT_TEST(VDB::UnitTests::FirstLevelChildSet_FullChild_NeighbourTest);
+}
+
 int main()
 {
-	LOG_UNIT_TEST(VDB_t::UnitTests::FirstLevelChildAlloc_SingleChild);
-	LOG_UNIT_TEST(VDB_t::UnitTests::FirstLevelChildAlloc_DifferentChild);
-	LOG_UNIT_TEST(VDB_t::UnitTests::FirstLevelChildAlloc_SameChild);
-	LOG_UNIT_TEST(VDB_t::UnitTests::FirstLevelChildExists_FullChild_True);
-	LOG_UNIT_TEST(VDB_t::UnitTests::FirstLevelChildExists_FullChild_False);
-	LOG_UNIT_TEST(VDB_t::UnitTests::FirstLevelChildFree_FullChild_True);
-	LOG_UNIT_TEST(VDB_t::UnitTests::FirstLevelChildFree_FullChild_False);
-	LOG_UNIT_TEST(VDB_t::UnitTests::FirstLevelChildGet_ExistingChild);
-	LOG_UNIT_TEST(VDB_t::UnitTests::FirstLevelChildGet_MissingChild);
-	LOG_UNIT_TEST(VDB_t::UnitTests::FirstLevelChildGet_FullChild_True);
-	LOG_UNIT_TEST(VDB_t::UnitTests::FirstLevelChildGet_FullChild_False);
-	LOG_UNIT_TEST(VDB_t::UnitTests::FirstLevelChildSet_FullChild_NeighbourTest);
+	std::cout << "OneLevelVDB tests" << std::endl;
+	UnitTests<OneLevelVDB_t>();
+	std::cout << "TwoLevelVDB tests" << std::endl;
+	UnitTests<TwoLevelVDB_t>();
 	return 0;
 }
