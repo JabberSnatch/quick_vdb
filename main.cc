@@ -93,6 +93,7 @@ public:
 			{
 				children_[bit_index].reset(new Child(active_bits_[bit_index]));
 				children_[bit_index]->set(_p, _v);
+				child_bits_.set(bit_index);
 			}
 		}
 		else
@@ -101,11 +102,13 @@ public:
 			if (children_[bit_index]->all())
 			{
 				active_bits_.set(bit_index);
+				child_bits_.reset(bit_index);
 				children_[bit_index].reset(nullptr);
 			}
 			else if (children_[bit_index]->none())
 			{
 				active_bits_.reset(bit_index);
+				child_bits_.reset(bit_index);
 				children_[bit_index].reset(nullptr);
 			}
 		}
@@ -118,11 +121,11 @@ public:
 	}
 	bool all() const
 	{
-		return active_bits_.all();
+		return active_bits_.all() && child_bits_.none();
 	}
 	bool none() const
 	{
-		return active_bits_.none();
+		return active_bits_.none() && child_bits_.none();
 	}
 private:
 	static constexpr std::size_t kInternalLog2Side = Log2Side;
