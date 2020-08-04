@@ -1,11 +1,29 @@
 cmake_minimum_required(VERSION 3.0)
 
-set( SOURCES
-	 main.cc
-	 )
-
 project(quick_vdb)
 
-add_compile_options(-std:c++latest)
-add_compile_options(-W4 -WX)
-add_executable(quick_vdb ${SOURCES})
+option(QVDB_BUILD_TESTS "Build unit tests executable" ON)
+
+if (${QVDB_BUILD_TESTS})
+   add_compile_definitions(QVDB_BUILD_TESTS)
+endif()
+
+add_library(qvdb INTERFACE)
+target_include_directories(qvdb INTERFACE include)
+
+if (${QVDB_BUILD_TESTS})
+
+	if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
+		add_compile_options(-std:c++latest)
+		add_compile_options(-W4 -WX)
+
+	elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR
+		   "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+		add_compile_options(-std=c++17)
+
+	endif()
+
+   add_executable(qvdb_tests main.cc)
+   target_link_libraries(qvdb_tests PRIVATE qvdb)
+
+endif()
