@@ -149,11 +149,12 @@ public:
 		}
 	};
 	struct RootData {
-		std::unique_ptr<Child> child_;
-		bool active_;
+		std::unique_ptr<Child> child_{ nullptr };
+		bool active_ = false;
 	};
 	using RootMap_t = std::unordered_map<RootKey_t, RootData, RootKeyHash>;
 public:
+
 	void set(Position_t const &_p, bool const _v = true)
 	{
 		RootKey_t const key = RootKey_(_p);
@@ -188,7 +189,9 @@ public:
 			}
 		}
 	}
+
 	void reset(Position_t const &_p) { set(_p, false); }
+
 	bool get(Position_t const &_p) const
 	{
 		RootKey_t const key = RootKey_(_p);
@@ -204,6 +207,12 @@ public:
 		else
 			return false;
 	}
+
+    void clear()
+    {
+        root_map_.clear();
+    }
+
 private:
 	static RootKey_t RootKey_(Position_t const &_p)
 	{
@@ -215,7 +224,7 @@ private:
 		};
 	}
 private:
-	RootMap_t root_map_;
+	RootMap_t root_map_{};
 
 
 #ifdef QVDB_BUILD_TESTS
