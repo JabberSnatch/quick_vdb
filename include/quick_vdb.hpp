@@ -19,34 +19,61 @@
 namespace quick_vdb {
 
 using Integer_t = std::int64_t;
+using Unsigned_t = std::uint64_t;
 using Position_t = std::array<Integer_t, 3u>;
+using Extent_t = std::array<Unsigned_t, 3u>;
+
+struct Box_t
+{
+    Position_t base;
+    Extent_t extent;
+};
+
+struct CacheEntry
+{
+    Position_t base;
+    void* node;
+};
 
 template <std::size_t Log2Side>
 class LeafNode
 {
 public:
+    static constexpr unsigned kNodeLevel = 0u;
+
+public:
 	static constexpr std::size_t kLog2Side = Log2Side;
 	LeafNode() = default;
-	explicit LeafNode(bool _active){ if (_active) active_bits_.set(); }
+
+	explicit LeafNode(bool _active, Position_t const& _base)
+        : base_{ _base } {
+        if (_active)
+            active_bits_.set();
+    }
+
 public:
-	void set(Position_t const &_p, bool const _v = true)
+	void set(CacheEntry*, Position_t const &_p, bool const _v = true)
 	{
 		std::size_t const bit_index = BitIndex_(_p);
 		active_bits_[bit_index] = _v;
 	}
-	bool get(Position_t const &_p)
+
+	bool get(CacheEntry*, Position_t const &_p)
 	{
 		std::size_t const bit_index = BitIndex_(_p);
 		return active_bits_[bit_index];
 	}
+
 	bool all() const
 	{
 		return active_bits_.all();
 	}
+
 	bool none() const
 	{
 		return active_bits_.none();
 	}
+
 private:
 	static std::size_t const BitIndex_(Position_t const &_p)
 	{
@@ -58,63 +85,103 @@ private:
 			(_p[1] & kLocalMask) << kLog2Side |
 			(_p[0] & kLocalMask) << kLog2Side*2u;
 	}
+
 private:
 	std::bitset<1u << (kLog2Side * 3u)> active_bits_;
+    Position_t base_;
 };
 
 template <typename Child, std::size_t Log2Side>
 class BranchNode
 {
 public:
+    static constexpr unsigned kNodeLevel = Child::kNodeLevel + 1u;
+    using ChildT = Child;
+
+public:
 	static constexpr std::size_t kLog2Side = Log2Side + Child::kLog2Side;
 	BranchNode() = default;
-	explicit BranchNode(bool _active){ if (_active) active_bits_.set(); }
+
+	explicit BranchNode(bool _active, Position_t const& _base)
+        : base_{ _base } {
+        if (_active)
+            active_bits_.set();
+    }
+
 public:
-	void set(Position_t const &_p, bool const _v = true)
+
+	void set(CacheEntry* _root_cache, Position_t const &_p, bool const _v = true)
 	{
 		std::size_t const bit_index = BitIndex_(_p);
 		if (!child_bits_[bit_index])
 		{
 			if (_v != active_bits_[bit_index])
 			{
-				children_[bit_index].reset(new Child(active_bits_[bit_index]));
-				children_[bit_index]->set(_p, _v);
+                Position_t child_base = ChildBase_(_p);
+				children_[bit_index].reset(new Child(active_bits_[bit_index], child_base));
+
+				children_[bit_index]->set(_root_cache, _p, _v);
 				child_bits_.set(bit_index);
+
+                _root_cache[kNodeLevel-1u] = CacheEntry{
+                    child_base,
+                    (void*)children_[bit_index].get()
+                };
 			}
 		}
 		else
 		{
-			children_[bit_index]->set(_p, _v);
-			if (children_[bit_index]->all())
-			{
-				active_bits_.set(bit_index);
-				child_bits_.reset(bit_index);
+			children_[bit_index]->set(_root_cache, _p, _v);
+
+            bool all = children_[bit_index]->all();
+            bool none = children_[bit_index]->none();
+            if (all != none)
+            {
+                active_bits_.set(bit_index, all);
+                child_bits_.set(bit_index, false);
+
+#if 0
+                if (_root_cache[kNodeLevel-1u] == (void*)children_[bit_index].get())
+                    _root_cache[kNodeLevel-1u] = nullptr;
+#endif
 				children_[bit_index].reset(nullptr);
-			}
-			else if (children_[bit_index]->none())
-			{
-				active_bits_.reset(bit_index);
-				child_bits_.reset(bit_index);
-				children_[bit_index].reset(nullptr);
-			}
+            }
+
+            _root_cache[kNodeLevel-1u] = CacheEntry{
+                ChildBase_(_p),
+                (void*)children_[bit_index].get()
+            };
 		}
 	}
-	bool get(Position_t const &_p) const
+
+	bool get(CacheEntry* _root_cache, Position_t const &_p) const
 	{
 		std::size_t const bit_index = BitIndex_(_p);
-		if (child_bits_[bit_index]) return children_[bit_index]->get(_p);
-		else return active_bits_[bit_index];
+		if (child_bits_[bit_index])
+        {
+            _root_cache[kNodeLevel-1u] = CacheEntry{
+                ChildBase_(_p),
+                (void*)children_[bit_index].get()
+            };
+            return children_[bit_index]->get(_root_cache, _p);
+        }
+		else
+            return active_bits_[bit_index];
 	}
+
 	bool all() const
 	{
 		return active_bits_.all() && child_bits_.none();
 	}
+
 	bool none() const
 	{
 		return active_bits_.none() && child_bits_.none();
 	}
+
 private:
 	static constexpr std::size_t kInternalLog2Side = Log2Side;
+
 	static std::size_t const BitIndex_(Position_t const &_p)
 	{
 		// z/Child::Nz + (y/Child::Ny) * Nz + (x/Child::Nx) * Nz*Ny
@@ -127,16 +194,34 @@ private:
 			((_p[1] & kLocalMask) >> Child::kLog2Side) << kInternalLog2Side |
 			((_p[0] & kLocalMask) >> Child::kLog2Side) << kInternalLog2Side*2u;
 	}
+
+    static Position_t ChildBase_(Position_t const& _p)
+    {
+		constexpr std::int64_t kChildLocalMask = (1u << Child::kLog2Side) - 1u;
+		return {
+			_p[0] & ~kChildLocalMask,
+			_p[1] & ~kChildLocalMask,
+			_p[2] & ~kChildLocalMask
+		};
+    }
+
 private:
 	static constexpr std::size_t kSize = kInternalLog2Side * 3u;
 	std::array<std::unique_ptr<Child>, 1u << kSize> children_;
 	std::bitset<1u << kSize> active_bits_;
 	std::bitset<1u << kSize> child_bits_;
+
+    Position_t base_;
 };
 
 template <typename Child>
 class RootNode
 {
+
+public:
+    static constexpr unsigned kNodeLevel = Child::kNodeLevel + 1u;
+    using ChildT = Child;
+
 public:
 	using RootKey_t = std::array<Integer_t, 3>;
 	struct RootKeyHash {
@@ -153,6 +238,7 @@ public:
 		bool active_ = false;
 	};
 	using RootMap_t = std::unordered_map<RootKey_t, RootData, RootKeyHash>;
+
 public:
 
 	void set(Position_t const &_p, bool const _v = true)
@@ -170,37 +256,61 @@ public:
 		{
 			if (_v != data.active_)
 			{
-				data.child_.reset(new Child(data.active_));
-				data.child_->set(_p, _v);
+				Position_t child_base = ChildBase_(_p);
+				data.child_.reset(new Child(data.active_, child_base));
+				data.child_->set(node_cache_, _p, _v);
+
+                node_cache_[kNodeLevel-1u] = CacheEntry{
+                    child_base,
+                    (void*)data.child_.get()
+                };
 			}
 		}
 		else
 		{
-			data.child_->set(_p, _v);
-			if (data.child_->all())
-			{
-				data.active_ = true;
-				data.child_.reset(nullptr);
-			}
-			else if (data.child_->none())
-			{
-				data.active_ = false;
-				data.child_.reset(nullptr);
-			}
+			data.child_->set(node_cache_, _p, _v);
+
+            bool all = data.child_->all();
+            bool none = data.child_->none();
+            if (all != none)
+            {
+                data.active_ = all;
+                data.child_.reset(nullptr);
+            }
+
+            node_cache_[kNodeLevel-1u] = CacheEntry{
+                ChildBase_(_p),
+                (void*)data.child_.get()
+            };
 		}
 	}
 
 	void reset(Position_t const &_p) { set(_p, false); }
 
-	bool get(Position_t const &_p) const
+	bool get(Position_t const &_p)
 	{
+#if 0
+        (*)(Position_t const& _p){//, Position_t const& _ref){
+            Position_t child_base = Type::ChildBase_(_p);
+            if (node_cache_[Type::kNodeLevel-1u] == child_base)
+            {
+            }
+        }
+#endif
+
 		RootKey_t const key = RootKey_(_p);
 		typename RootMap_t::const_iterator const nit = root_map_.find(key);
 		if (nit != root_map_.end())
 		{
 			RootData const &data = nit->second;
 			if (data.child_ != nullptr)
-				return data.child_->get(_p);
+            {
+                node_cache_[kNodeLevel-1u] = CacheEntry{
+                    ChildBase_(_p),
+                    (void*)data.child_.get()
+                };
+				return data.child_->get(node_cache_, _p);
+            }
 			else
 				return data.active_;
 		}
@@ -223,8 +333,55 @@ private:
 			_p[2] & ~kChildLocalMask
 		};
 	}
+
+    static Position_t ChildBase_(Position_t const&_p)
+    {
+        return (Position_t)RootKey_(_p);
+    }
+
 private:
 	RootMap_t root_map_{};
+    Box_t bounds_{};
+
+private:
+    CacheEntry node_cache_[kNodeLevel];
+
+    template <typename Type, unsigned Index> struct TreeTypes;
+
+    using TypeHierarchy = TreeTypes<RootNode<Child>, kNodeLevel-1u>;
+
+    template <typename Type>
+    struct TreeTypes<Type, 0u>
+    {
+        using type = Type;
+        using Next = void;
+    };
+
+    template <typename Type, unsigned Index>
+    struct TreeTypes
+    {
+        using type = Type;
+        using Next = TreeTypes<typename Type::ChildT, Index-1u>;
+    };
+
+    template <typename List, unsigned Index>
+    struct Get {};
+
+    template <template <typename, unsigned> typename List,
+              typename Type,
+              unsigned Length,
+              unsigned Index>
+    struct Get<List<Type, Length>, Index>
+    {
+        using type = typename Get<typename List<Type, Length>::Next, Index>::type;
+    };
+
+    template <template <typename, unsigned> typename List, typename Type, unsigned Length>
+    struct Get<List<Type, Length>, Length>
+    {
+        using type = typename List<Type, Length>::type;
+    };
+
 
 
 #ifdef QVDB_BUILD_TESTS
