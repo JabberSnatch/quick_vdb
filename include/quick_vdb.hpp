@@ -35,6 +35,17 @@ struct CacheEntry
     void* node;
 };
 
+template <typename T>
+static Position_t NodeBase_(Position_t const& _p)
+{
+    constexpr std::int64_t kNodeLocalMask = (1u << T::kLog2Side) - 1u;
+    return {
+        _p[0] & ~kNodeLocalMask,
+        _p[1] & ~kNodeLocalMask,
+        _p[2] & ~kNodeLocalMask
+    };
+}
+
 template <std::size_t Log2Side>
 class LeafNode
 {
@@ -87,6 +98,7 @@ private:
             (_p[0] & kLocalMask) << kLog2Side*2u;
     }
 
+
 private:
     std::bitset<1u << (kLog2Side * 3u)> active_bits_;
     Position_t base_;
@@ -124,10 +136,12 @@ public:
                 children_[bit_index]->set(_root_cache, _p, _v);
                 child_bits_.set(bit_index);
 
+#ifdef QVDB_ENABLE_CACHE
                 _root_cache[kNodeLevel-1u] = CacheEntry{
                     child_base,
                     (void*)children_[bit_index].get()
                 };
+#endif
             }
         }
         else
@@ -148,10 +162,12 @@ public:
                 children_[bit_index].reset(nullptr);
             }
 
+#ifdef QVDB_ENABLE_CACHE
             _root_cache[kNodeLevel-1u] = CacheEntry{
                 ChildBase_(_p),
                 (void*)children_[bit_index].get()
             };
+#endif
         }
     }
 
@@ -160,10 +176,12 @@ public:
         std::size_t const bit_index = BitIndex_(_p);
         if (child_bits_[bit_index])
         {
+#ifdef QVDB_ENABLE_CACHE
             _root_cache[kNodeLevel-1u] = CacheEntry{
                 ChildBase_(_p),
                 (void*)children_[bit_index].get()
             };
+#endif
             return children_[bit_index]->get(_root_cache, _p);
         }
         else
@@ -207,6 +225,7 @@ public:
         };
     }
 
+
 private:
     static constexpr std::size_t kSize = kInternalLog2Side * 3u;
     std::array<std::unique_ptr<Child>, 1u << kSize> children_;
@@ -244,13 +263,19 @@ public:
 public:
     RootNode()
     {
+#ifdef QVDB_ENABLE_CACHE
         for (unsigned i = 0u; i < kNodeLevel; ++i)
-            node_cache_[i] = CacheEntry{};
+            node_cache_[i] = CacheEntry{ Position_t{}, nullptr };
+#endif
     }
 
     void set(Position_t const &_p, bool const _v = true)
     {
-        unsigned index = CacheIndex_(node_cache_, _p);
+#ifdef QVDB_ENABLE_CACHE
+        unsigned entry_index = ExecOnCache<SetOp>{}(*this, _p, nullptr, &node_cache_[0], _p, _v);
+        if (entry_index != -1u)
+            return;
+#endif
 
         RootKey_t const key = RootKey_(_p);
         typename RootMap_t::iterator nit = root_map_.find(key);
@@ -267,17 +292,27 @@ public:
             {
                 Position_t child_base = ChildBase_(_p);
                 data.child_.reset(new Child(data.active_, child_base));
+
+#ifndef QVDB_ENABLE_CACHE
+                data.child_->set(nullptr, _p, _v);
+#else
                 data.child_->set(node_cache_, _p, _v);
 
                 node_cache_[kNodeLevel-1u] = CacheEntry{
                     child_base,
                     (void*)data.child_.get()
                 };
+#endif
             }
         }
         else
         {
+
+#ifndef QVDB_ENABLE_CACHE
+            data.child_->set(nullptr, _p, _v);
+#else
             data.child_->set(node_cache_, _p, _v);
+#endif
 
             bool all = data.child_->all();
             bool none = data.child_->none();
@@ -287,10 +322,12 @@ public:
                 data.child_.reset(nullptr);
             }
 
+#ifdef QVDB_ENABLE_CACHE
             node_cache_[kNodeLevel-1u] = CacheEntry{
                 ChildBase_(_p),
                 (void*)data.child_.get()
             };
+#endif
         }
     }
 
@@ -298,7 +335,12 @@ public:
 
     bool get(Position_t const &_p)
     {
-        unsigned index = CacheIndex_(node_cache_, _p);
+#ifdef QVDB_ENABLE_CACHE
+        bool result = false;
+        unsigned entry_index = ExecOnCache<GetOp>{}(*this, _p, &result, &node_cache_[0], _p);
+        if (entry_index != -1u)
+            return result;
+#endif
 
         RootKey_t const key = RootKey_(_p);
         typename RootMap_t::const_iterator const nit = root_map_.find(key);
@@ -307,11 +349,17 @@ public:
             RootData const &data = nit->second;
             if (data.child_ != nullptr)
             {
+
+#ifndef QVDB_ENABLE_CACHE
+                return data.child_->get(nullptr, _p);
+#else
                 node_cache_[kNodeLevel-1u] = CacheEntry{
                     ChildBase_(_p),
                     (void*)data.child_.get()
                 };
                 return data.child_->get(node_cache_, _p);
+#endif
+
             }
             else
                 return data.active_;
@@ -345,78 +393,131 @@ private:
     RootMap_t root_map_{};
     Box_t bounds_{};
 
+#ifdef QVDB_ENABLE_CACHE
 private:
     CacheEntry node_cache_[kNodeLevel];
 
-    template <typename Type, unsigned Index> struct TreeTypes;
-
-    using TypeHierarchy = TreeTypes<RootNode<Child>, kNodeLevel>;
-
-    template <typename Type>
-    struct TreeTypes<Type, 1u>
-    {
-        static constexpr unsigned Index = 0u;
-        using type = Type;
-        using Next = void;
+    enum eOpType {
+        kGet,
+        kSet,
+        kCompareBase,
     };
 
-    template <typename Type, unsigned Length>
-    struct TreeTypes
+    template <typename T>
+    struct GetOp
     {
-        static constexpr unsigned Index = Length-1u;
-        using type = Type;
-        using Next = TreeTypes<typename Type::ChildT, Index>;
-    };
-
-    template <typename T, typename P, unsigned E>
-    struct Crawler
-    {
-        using Type = T;
-        static constexpr unsigned Index = E;
-        using Prev = P;
-        using This = Crawler<Type, Prev, Index>;
-        using Next = Crawler<typename Type::ChildT, This, Index-1u>;
-
-        static unsigned up(CacheEntry const* _cache, Position_t const& _p)
+        template <typename ... Args>
+        static void apply(CacheEntry const& _entry, void* _out, Args ... args)
         {
-            auto childbase_ = Type::ChildBase_;
-            unsigned index = Index;
-
-            Position_t child_base = childbase_(_p);
-            if (_cache[index].base == child_base)
-                return index;
-            else
-                return Prev::up(_cache, _p);
-        }
-
-        static unsigned LookupP(CacheEntry const* _cache, Position_t const& _p)
-        {
-            return Next::LookupP(_cache, _p);
+            *(bool*)_out = reinterpret_cast<T*>(_entry.node)->get(args...);
         }
     };
 
-    template <typename P, unsigned E>
-    struct Crawler<void, P, E>
+    template <typename T>
+    struct SetOp
     {
-        static unsigned LookupP(CacheEntry const* _cache, Position_t const& _p)
+        template <typename ... Args>
+        static void apply(CacheEntry const& _entry, void* _out, Args ... args)
         {
-            return P::Prev::up(_cache, _p);
+            reinterpret_cast<T*>(_entry.node)->set(args...);
         }
     };
 
-    struct Exit
+    template <typename T>
+    struct CompareBaseOp
     {
-        static unsigned up(CacheEntry const* _cache, Position_t const& _p)
+        template <typename ... Args>
+        static void apply(CacheEntry const& _entry, void* _out, Args ... args)
+        {
+            *(bool*)_out = (_entry.base == NodeBase_<T>(args...));
+        }
+    };
+
+
+    template <template <typename> typename Op, typename T, unsigned Index, unsigned Search>
+    struct Indexer
+    {
+        using Head = T;
+        using Tail = typename Head::ChildT;
+        using Next = Indexer<Op, Tail, Index-1u, Search>;
+
+        template <typename ... Args>
+        void route(CacheEntry const& _entry, void* _out, Args ... args)
+        {
+            Next{}.route(_entry, _out, args...);
+        }
+    };
+
+    template <template <typename> typename Op, typename T, unsigned Match>
+    struct Indexer<Op, T, Match, Match>
+    {
+        template <typename ... Args>
+        void route(CacheEntry const& _entry, void* _out, Args ... args)
+        {
+            Op<T>::apply(_entry, _out, args...);
+        }
+    };
+
+    template <template <typename> typename Op, typename T, unsigned Search>
+    struct Indexer<Op, T, -1u, Search>
+    {
+        template <typename ... Args>
+        void route(CacheEntry const&, void*, Args ...)
+        {
+        }
+    };
+
+    template <template <typename> typename Op, unsigned I>
+    using CacheIndexer = Indexer<Op, RootNode<Child>, kNodeLevel, I>;
+
+    template <template <typename> typename Op, typename T, unsigned R, unsigned N>
+    struct For : For<Op, T, R+1, N>
+    {
+        template <typename ... Args>
+        unsigned route(Position_t const& _p,
+                       CacheEntry* _node_cache,
+                       void* _out, Args ... args)
+        {
+            if (_node_cache[R].node)
+            {
+                bool compareBase = false;
+                CacheIndexer<CompareBaseOp, R>{}.route(_node_cache[R], &compareBase, _p);
+
+                if (compareBase)
+                {
+                    CacheIndexer<Op, R>{}.route(_node_cache[R], _out, args...);
+                    return R;
+                }
+            }
+
+            return reinterpret_cast<For<Op, T, R+1, N>*>(this)->route(_p, _node_cache, _out, args...);
+        }
+    };
+
+    template <template <typename> typename Op, typename T, unsigned E>
+    struct For<Op, T, E, E>
+    {
+        template <typename ... Args>
+        unsigned route(Position_t const&,
+                       CacheEntry*,
+                       void*, Args ...)
         {
             return -1u;
         }
     };
 
-    unsigned CacheIndex_(CacheEntry const* _cache, Position_t const& _p)
+    template <template <typename> typename Op>
+    struct ExecOnCache
     {
-        unsigned findres = Crawler<RootNode<Child>, Exit, kNodeLevel-1u>::LookupP(_cache, _p);
-        return findres;
-    }
+        template <typename ... Args>
+        unsigned operator()(RootNode<Child> &root, Position_t const& _p, void* _out, Args ... args)
+        {
+            return For<Op, RootNode<Child>, 0u, RootNode<Child>::kNodeLevel>{}.route(
+                _p, root.node_cache_, _out, args...);
+        }
+    };
+
+#endif
 
 
 #ifdef QVDB_BUILD_TESTS

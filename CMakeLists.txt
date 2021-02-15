@@ -3,9 +3,14 @@ cmake_minimum_required(VERSION 3.0)
 project(quick_vdb)
 
 option(QVDB_BUILD_TESTS "Build unit tests executable" ON)
+option(QVDB_ENABLE_CACHE "Enable VDB internal caching mechanism." ON)
 
 if (${QVDB_BUILD_TESTS})
    add_compile_definitions(QVDB_BUILD_TESTS)
+endif()
+
+if (${QVDB_ENABLE_CACHE})
+  add_compile_definitions(QVDB_ENABLE_CACHE)
 endif()
 
 add_library(qvdb INTERFACE)
