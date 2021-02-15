@@ -40,6 +40,7 @@ class LeafNode
 {
 public:
     static constexpr unsigned kNodeLevel = 0u;
+    using ChildT = void;
 
 public:
 	static constexpr std::size_t kLog2Side = Log2Side;
@@ -195,6 +196,7 @@ private:
 			((_p[0] & kLocalMask) >> Child::kLog2Side) << kInternalLog2Side*2u;
 	}
 
+public:
     static Position_t ChildBase_(Position_t const& _p)
     {
 		constexpr std::int64_t kChildLocalMask = (1u << Child::kLog2Side) - 1u;
@@ -240,9 +242,16 @@ public:
 	using RootMap_t = std::unordered_map<RootKey_t, RootData, RootKeyHash>;
 
 public:
+    RootNode()
+    {
+        for (unsigned i = 0u; i < kNodeLevel; ++i)
+            node_cache_[i] = CacheEntry{};
+    }
 
 	void set(Position_t const &_p, bool const _v = true)
 	{
+        unsigned index = CacheIndex_(node_cache_, _p);
+
 		RootKey_t const key = RootKey_(_p);
 		typename RootMap_t::iterator nit = root_map_.find(key);
 		if (nit == root_map_.end())
@@ -289,14 +298,7 @@ public:
 
 	bool get(Position_t const &_p)
 	{
-#if 0
-        (*)(Position_t const& _p){//, Position_t const& _ref){
-            Position_t child_base = Type::ChildBase_(_p);
-            if (node_cache_[Type::kNodeLevel-1u] == child_base)
-            {
-            }
-        }
-#endif
+        unsigned index = CacheIndex_(node_cache_, _p);
 
 		RootKey_t const key = RootKey_(_p);
 		typename RootMap_t::const_iterator const nit = root_map_.find(key);
@@ -348,40 +350,73 @@ private:
 
     template <typename Type, unsigned Index> struct TreeTypes;
 
-    using TypeHierarchy = TreeTypes<RootNode<Child>, kNodeLevel-1u>;
+    using TypeHierarchy = TreeTypes<RootNode<Child>, kNodeLevel>;
 
     template <typename Type>
-    struct TreeTypes<Type, 0u>
+    struct TreeTypes<Type, 1u>
     {
+        static constexpr unsigned Index = 0u;
         using type = Type;
         using Next = void;
     };
 
-    template <typename Type, unsigned Index>
+    template <typename Type, unsigned Length>
     struct TreeTypes
     {
+        static constexpr unsigned Index = Length-1u;
         using type = Type;
-        using Next = TreeTypes<typename Type::ChildT, Index-1u>;
+        using Next = TreeTypes<typename Type::ChildT, Index>;
     };
 
-    template <typename List, unsigned Index>
-    struct Get {};
-
-    template <template <typename, unsigned> typename List,
-              typename Type,
-              unsigned Length,
-              unsigned Index>
-    struct Get<List<Type, Length>, Index>
+    template <typename T, typename P, unsigned E>
+    struct Crawler
     {
-        using type = typename Get<typename List<Type, Length>::Next, Index>::type;
+        using Type = T;
+        static constexpr unsigned Index = E;
+        using Prev = P;
+        using This = Crawler<Type, Prev, Index>;
+        using Next = Crawler<typename Type::ChildT, This, Index-1u>;
+
+        static unsigned up(CacheEntry const* _cache, Position_t const& _p)
+        {
+            auto childbase_ = Type::ChildBase_;
+            unsigned index = Index;
+
+            Position_t child_base = childbase_(_p);
+            if (_cache[index].base == child_base)
+                return index;
+            else
+                return Prev::up(_cache, _p);
+        }
+
+        static unsigned LookupP(CacheEntry const* _cache, Position_t const& _p)
+        {
+            return Next::LookupP(_cache, _p);
+        }
     };
 
-    template <template <typename, unsigned> typename List, typename Type, unsigned Length>
-    struct Get<List<Type, Length>, Length>
+    template <typename P, unsigned E>
+    struct Crawler<void, P, E>
     {
-        using type = typename List<Type, Length>::type;
+        static unsigned LookupP(CacheEntry const* _cache, Position_t const& _p)
+        {
+            return P::Prev::up(_cache, _p);
+        }
     };
 
+    struct Exit
+    {
+        static unsigned up(CacheEntry const* _cache, Position_t const& _p)
+        {
+            return -1u;
+        }
+    };
+
+    unsigned CacheIndex_(CacheEntry const* _cache, Position_t const& _p)
+    {
+        unsigned findres = Crawler<RootNode<Child>, Exit, kNodeLevel-1u>::LookupP(_cache, _p);
+        return findres;
+    }
 
 
 #ifdef QVDB_BUILD_TESTS
