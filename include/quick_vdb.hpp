@@ -64,6 +64,12 @@ public:
     static constexpr unsigned kNodeLevel = 0u;
     using ChildT = void;
 
+    void GetLeafPointer(Position_t const& _p, std::size_t* _size, std::uint64_t const** _out)
+    {
+        *_size = active_bits_.kArraySize;
+        *_out = active_bits_.storage;
+    }
+
 public:
     static constexpr std::size_t kLog2Side = Log2Side;
     LeafNode() = default;
@@ -123,6 +129,19 @@ class BranchNode
 public:
     static constexpr unsigned kNodeLevel = Child::kNodeLevel + 1u;
     using ChildT = Child;
+
+    void GetLeafPointer(Position_t const& _p, std::size_t* _size, std::uint64_t const** _out)
+    {
+        std::size_t const bit_index = BitIndex_(_p);
+        if (child_bits_.test(bit_index))
+            children_[bit_index]->GetLeafPointer(_p, _size, _out);
+        else
+        {
+            *_size = 0;
+            if (_out)
+                *_out = (std::uint64_t const*)active_bits_.test(bit_index);
+        }
+    }
 
 public:
     static constexpr std::size_t kLog2Side = Log2Side + Child::kLog2Side;
@@ -260,6 +279,27 @@ class RootNode
 public:
     static constexpr unsigned kNodeLevel = Child::kNodeLevel + 1u;
     using ChildT = Child;
+
+    void GetLeafPointer(Position_t const& _p, std::size_t* _size, std::uint64_t const** _out)
+    {
+        RootKey_t const key = RootKey_(_p);
+        typename RootMap_t::const_iterator const nit = root_map_.find(key);
+
+        if (nit != root_map_.end())
+        {
+            RootData const &data = nit->second;
+            if (data.child_ != nullptr)
+                data.child_->GetLeafPointer(_p, _size, _out);
+            else
+            {
+                *_size = 0;
+                if (_out)
+                    *_out = (std::uint64_t const*)data.active_;
+            }
+        }
+        else
+            *_size = -1ull;
+    }
 
 public:
     using RootKey_t = std::array<Integer_t, 3>;
