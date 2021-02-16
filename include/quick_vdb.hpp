@@ -35,6 +35,17 @@ struct CacheEntry
     void* node;
 };
 
+template <unsigned Size>
+struct Bitset;
+
+#ifndef QVDB_STD_BITSET
+template <unsigned Size>
+using Bitset_t = Bitset<Size>;
+#else
+template <unsigned Size>
+using Bitset_t = std::bitset<Size>;
+#endif
+
 template <typename T>
 static Position_t NodeBase_(Position_t const& _p)
 {
@@ -61,19 +72,21 @@ public:
         : base_{ _base } {
         if (_active)
             active_bits_.set();
+        else
+            active_bits_.reset();
     }
 
 public:
     void set(CacheEntry*, Position_t const &_p, bool const _v = true)
     {
         std::size_t const bit_index = BitIndex_(_p);
-        active_bits_[bit_index] = _v;
+        active_bits_.set(bit_index, _v);
     }
 
     bool get(CacheEntry*, Position_t const &_p)
     {
         std::size_t const bit_index = BitIndex_(_p);
-        return active_bits_[bit_index];
+        return active_bits_.test(bit_index);
     }
 
     bool all() const
@@ -100,7 +113,7 @@ private:
 
 
 private:
-    std::bitset<1u << (kLog2Side * 3u)> active_bits_;
+    Bitset_t<1u << (kLog2Side * 3u)> active_bits_;
     Position_t base_;
 };
 
@@ -119,6 +132,11 @@ public:
         : base_{ _base } {
         if (_active)
             active_bits_.set();
+        else
+        {
+            active_bits_.reset();
+            child_bits_.reset();
+        }
     }
 
 public:
@@ -126,12 +144,12 @@ public:
     void set(CacheEntry* _root_cache, Position_t const &_p, bool const _v = true)
     {
         std::size_t const bit_index = BitIndex_(_p);
-        if (!child_bits_[bit_index])
+        if (!child_bits_.test(bit_index))
         {
-            if (_v != active_bits_[bit_index])
+            if (_v != active_bits_.test(bit_index))
             {
                 Position_t child_base = ChildBase_(_p);
-                children_[bit_index].reset(new Child(active_bits_[bit_index], child_base));
+                children_[bit_index].reset(new Child(active_bits_.test(bit_index), child_base));
 
                 children_[bit_index]->set(_root_cache, _p, _v);
                 child_bits_.set(bit_index);
@@ -174,7 +192,7 @@ public:
     bool get(CacheEntry* _root_cache, Position_t const &_p) const
     {
         std::size_t const bit_index = BitIndex_(_p);
-        if (child_bits_[bit_index])
+        if (child_bits_.test(bit_index))
         {
 #ifdef QVDB_ENABLE_CACHE
             _root_cache[kNodeLevel-1u] = CacheEntry{
@@ -185,7 +203,7 @@ public:
             return children_[bit_index]->get(_root_cache, _p);
         }
         else
-            return active_bits_[bit_index];
+            return active_bits_.test(bit_index);
     }
 
     bool all() const
@@ -229,8 +247,8 @@ public:
 private:
     static constexpr std::size_t kSize = kInternalLog2Side * 3u;
     std::array<std::unique_ptr<Child>, 1u << kSize> children_;
-    std::bitset<1u << kSize> active_bits_;
-    std::bitset<1u << kSize> child_bits_;
+    Bitset_t<1u << kSize> active_bits_;
+    Bitset_t<1u << kSize> child_bits_;
 
     Position_t base_;
 };
@@ -628,6 +646,61 @@ public:
         }
     };
 #endif // QVDB_BUILD_TESTS
+};
+
+template <unsigned Size>
+struct Bitset
+{
+    static_assert(((Size & 63u) == 0u), "Size must be multiple of 64");
+    static constexpr std::size_t kArraySize = Size/64u;
+    static constexpr std::size_t kArrayOffset(std::size_t index) { return index / 64u; }
+    static constexpr std::size_t kQWordOffset(std::size_t index) { return index & 63u; }
+
+    void set() {
+        //std::memset(storage, ~0u, Size);
+
+        for (int i = 0; i < kArraySize; ++i)
+            storage[i] = ~0ull;
+    }
+
+    void reset() {
+        for (int i = 0; i < kArraySize; ++i)
+            storage[i] = 0ull;
+    }
+
+    void set(std::size_t _i, bool _v = true) {
+        std::size_t const arrayOffset = kArrayOffset(_i);
+        std::size_t const qwordOffset = kQWordOffset(_i);
+        std::uint64_t const input = storage[arrayOffset];
+        std::uint64_t const output = _v
+            ? input | ((1ull << qwordOffset))
+            : input ^ ((1ull << qwordOffset));
+
+        storage[arrayOffset] = output;
+    }
+
+    bool test(std::size_t _i) const {
+        std::size_t const arrayOffset = kArrayOffset(_i);
+        std::size_t const qwordOffset = kQWordOffset(_i);
+        std::uint64_t const output = storage[arrayOffset] & (1ull << qwordOffset);
+        return output != 0ull;
+    }
+
+    bool all() const {
+        bool all = true;
+        for (int i = 0; i < kArraySize && all;)
+            all = storage[i++] == ~0ull;
+        return all;
+    }
+
+    bool none() const {
+        bool none = true;
+        for (int i = 0; i < kArraySize && none;)
+            none = storage[i++] == 0ull;
+        return none;
+    }
+
+    std::uint64_t storage[kArraySize];
 };
 
 } // namespace quick_vdb
