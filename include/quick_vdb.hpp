@@ -293,6 +293,12 @@ public:
             *_size = -1ull;
     }
 
+    template <unsigned Index>
+    Position_t GetChildBase(Position_t const& _p)
+    {
+        return NodeBaseOp<RootNode<Child>, kNodeLevel, Index>{}(_p);
+    }
+
 public:
     using RootKey_t = std::array<Integer_t, 3>;
     struct RootKeyHash {
@@ -444,6 +450,29 @@ private:
 private:
     RootMap_t root_map_{};
     Box_t bounds_{};
+
+private:
+    template <typename T, unsigned Index, unsigned Search>
+    struct NodeBaseOp
+    {
+        using Head = T;
+        using Tail = typename Head::ChildT;
+        using Next = NodeBaseOp<Tail, Index-1u, Search>;
+
+        Position_t operator()(Position_t const& _p)
+        {
+            return Next{}(_p);
+        }
+    };
+
+    template <typename T, unsigned Match>
+    struct NodeBaseOp<T, Match, Match>
+    {
+        Position_t operator()(Position_t const& _p)
+        {
+            return NodeBase_<T>(_p);
+        }
+    };
 
 #ifdef QVDB_ENABLE_CACHE
 private:
