@@ -15,7 +15,6 @@
 #include <memory>
 #include <unordered_map>
 
-
 namespace quick_vdb {
 
 using Integer_t = std::int64_t;
@@ -78,8 +77,6 @@ public:
         : base_{ _base } {
         if (_active)
             active_bits_.set();
-        else
-            active_bits_.reset();
     }
 
 public:
@@ -119,7 +116,7 @@ private:
 
 
 private:
-    Bitset_t<1u << (kLog2Side * 3u)> active_bits_;
+    Bitset_t<1u << (kLog2Side * 3u)> active_bits_{};
     Position_t base_;
 };
 
@@ -151,11 +148,6 @@ public:
         : base_{ _base } {
         if (_active)
             active_bits_.set();
-        else
-        {
-            active_bits_.reset();
-            child_bits_.reset();
-        }
     }
 
 public:
@@ -168,10 +160,10 @@ public:
             if (_v != active_bits_.test(bit_index))
             {
                 Position_t child_base = ChildBase_(_p);
-                children_[bit_index].reset(new Child(active_bits_.test(bit_index), child_base));
+                children_[bit_index].reset(new Child(!_v, child_base));
 
                 children_[bit_index]->set(_root_cache, _p, _v);
-                child_bits_.set(bit_index);
+                child_bits_.set(bit_index, true);
 
 #ifdef QVDB_ENABLE_CACHE
                 _root_cache[kNodeLevel-1u] = CacheEntry{
@@ -266,8 +258,8 @@ public:
 private:
     static constexpr std::size_t kSize = kInternalLog2Side * 3u;
     std::array<std::unique_ptr<Child>, 1u << kSize> children_;
-    Bitset_t<1u << kSize> active_bits_;
-    Bitset_t<1u << kSize> child_bits_;
+    Bitset_t<1u << kSize> active_bits_{};
+    Bitset_t<1u << kSize> child_bits_{};
 
     Position_t base_;
 };
@@ -312,10 +304,12 @@ public:
             return hash;
         }
     };
+
     struct RootData {
         std::unique_ptr<Child> child_{ nullptr };
         bool active_ = false;
     };
+
     using RootMap_t = std::unordered_map<RootKey_t, RootData, RootKeyHash>;
 
 public:
@@ -691,14 +685,12 @@ public:
 template <unsigned Size>
 struct Bitset
 {
-    static_assert(((Size & 63u) == 0u), "Size must be multiple of 64");
+    static_assert(((Size & 63u) == 0), "Size must be multiple of 64");
     static constexpr std::size_t kArraySize = Size/64u;
     static constexpr std::size_t kArrayOffset(std::size_t index) { return index / 64u; }
     static constexpr std::size_t kQWordOffset(std::size_t index) { return index & 63u; }
 
     void set() {
-        //std::memset(storage, ~0u, Size);
-
         for (int i = 0; i < kArraySize; ++i)
             storage[i] = ~0ull;
     }
@@ -712,9 +704,10 @@ struct Bitset
         std::size_t const arrayOffset = kArrayOffset(_i);
         std::size_t const qwordOffset = kQWordOffset(_i);
         std::uint64_t const input = storage[arrayOffset];
+
         std::uint64_t const output = _v
-            ? input | ((1ull << qwordOffset))
-            : input ^ ((1ull << qwordOffset));
+            ? (input | (1ull << qwordOffset))
+            : (input & ~(1ull << qwordOffset));
 
         storage[arrayOffset] = output;
     }
@@ -729,18 +722,18 @@ struct Bitset
     bool all() const {
         bool all = true;
         for (int i = 0; i < kArraySize && all;)
-            all = storage[i++] == ~0ull;
+            all = (storage[i++] == ~0ull);
         return all;
     }
 
     bool none() const {
         bool none = true;
         for (int i = 0; i < kArraySize && none;)
-            none = storage[i++] == 0ull;
+            none = (storage[i++] == 0ull);
         return none;
     }
 
-    std::uint64_t storage[kArraySize];
+    std::uint64_t storage[kArraySize]{};
 };
 
 } // namespace quick_vdb
