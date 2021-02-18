@@ -105,13 +105,12 @@ public:
 private:
     static std::size_t const BitIndex_(Position_t const &_p)
     {
-        // z + y * Nz + x * Nz*Ny -> puts z in the least significant bits
         // x, y, and z being local coordinates ( [0, 2^kLog2Side[ )
         constexpr std::size_t kLocalMask = (1u << kLog2Side) - 1u;
         return
-            (_p[2] & kLocalMask) |
+            (_p[0] & kLocalMask) |
             (_p[1] & kLocalMask) << kLog2Side |
-            (_p[0] & kLocalMask) << kLog2Side*2u;
+            (_p[2] & kLocalMask) << kLog2Side*2u;
     }
 
 
@@ -238,9 +237,9 @@ private:
         // Nx, Ny, and Nz are bounds in terms of children ( [0, 2^kInternalLog2Side[ )
         constexpr std::size_t kLocalMask = (1u << kLog2Side) - 1u;
         return
-            ((_p[2] & kLocalMask) >> Child::kLog2Side) |
+            ((_p[0] & kLocalMask) >> Child::kLog2Side) |
             ((_p[1] & kLocalMask) >> Child::kLog2Side) << kInternalLog2Side |
-            ((_p[0] & kLocalMask) >> Child::kLog2Side) << kInternalLog2Side*2u;
+            ((_p[2] & kLocalMask) >> Child::kLog2Side) << kInternalLog2Side*2u;
     }
 
 public:
